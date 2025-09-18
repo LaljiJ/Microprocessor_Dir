@@ -1,1 +1,3 @@
-
+In this we are using,
+SOC: AM355x SOC by Texas Instrument (ARM cortex A8 processor)
+Processor: AM3358BZCZ100 
