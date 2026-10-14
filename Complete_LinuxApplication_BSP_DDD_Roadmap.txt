@@ -653,25 +653,252 @@ BSP & DDD Roadmap:
             - Fallback and Recovery Modes: Many implementations support redundant boot chains or specialized emergency recovery states (such as USB DFU/Interactive mode) if primary boot media verification fails.
             - Vulnerability & Exploits: Because Mask ROM is unpatchable after silicon fabrication, hardware bugs or logic flaws inside a Boot ROM (such as Apple’s SecureROM or NVIDIA Tegra flaws) cannot be fixed via software updates, often leading to permanent hardware-level jailbreaks or custom exploits.
             
-	U-Boot architecture
-	U-Boot environment
-	SPL/TPL
-	DDR initialization
-	Clock initialization
-	Pinmux initialization
-	PMIC initialization
-	Storage initialization
-	Ethernet/USB boot
-	Boot arguments
-	Device Tree handoff
-	FIT images
-	Secure boot basics
+	U-Boot architecture:
+        - Das U-Boot (Universal Boot Loader) relies on a modular, multi-stage architecture designed to manage the strict memory constraints of embedded systems. It acts as a hardware abstraction bridge between power-on and operating system execution.
+        - The architecture is structured into clear computational stages, a standardized driver abstraction layers framework, and specialized configuration and runtime subsystems.
+        
+        1. Multi-Stage Execution Model:
+            - Embedded systems often start up with access only to a tiny internal static RAM (SRAM) before the main dynamic memory (DRAM) is initialized. To handle this, Das U-Boot splits its execution into distinct sequential images:
+            - Secondary Program Loader (SPL): A highly optimized, minimal first-stage binary. It fits entirely within internal SRAM. Its primary responsibilities are low-level clock configuration, pin multiplexing, and initializing the DRAM controller. Once RAM is operational, the SPL loads the next phase into full memory and transfers execution.
+            - Tertiary Program Loader (TPL): An optional ultra-minimal layer used in specific systems (such as Rockchip SoCs) when the internal SRAM is too small to fit even a full SPL framework. It initializes the bare minimum required to load the SPL.
+            - U-Boot Proper: The full-featured second-stage environment. It includes the command-line interface (CLI), advanced file systems, network stacks, and execution shells (hush). It handles the discovery and loading of the OS kernel and Device Tree Blobs (DTB) into memory.
+                    [ SoC Mask ROM ] ➔ [ TPL (Optional) ] ➔ [ SPL (Runs in SRAM) ] ➔ [ U-Boot Proper (Runs in DRAM) ] ➔ [ Linux Kernel ]
+        
+        2. Core Architectural Subsystems:
+            - Driver Model (DM) : 
+                - Modern implementations rely on a Linux-like Driver Model to prevent hardware dependency sprawl. It organizes peripherals hierarchically via structural components:
+                - Lists / Uclasses: An abstract group of devices sharing the same operational interface (e.g., UCLASS_SERIAL, UCLASS_I2C, UCLASS_BLK).
+                - Drivers: The hardware-specific implementations bound to a specific node.
+                - Devices: Concrete logical instances of a driver bound to actual hardware.
+            - Device Tree Integration:
+                - Hardware layout is completely decoupled from the source code. Das U-Boot natively parses a Flattened Device Tree (FDT)—the same format utilized by the Linux kernel—to identify what hardware is present. For early bootstrap code like the SPL, special properties (such as bootph-ram or bootph-all) indicate to the builder which essential nodes must be compiled directly into the constrained SPL binary.
+            - Environment Variables Subsystem:
+                - Runtime customization is managed via a dedicated, persistent environment block. Variables dictate boot scripts, network addresses, and manual terminal flags. It supports volatile operation or hard persistence across non-volatile storage blocks (eMMC, SPI Flash, NVMe) using standard shell interaction hooks (printenv, setenv, saveenv).
+            - Standard Boot (bootstd):
+                - Recent architectural updates replace unpredictable, fragile shell scripting macros with structural device interfaces via U-Boot Standard Boot Documentation:
+                - bootdev: Represents a physical boot device instance (e.g., MMC, PCIe, USB, Ethernet).
+                - bootmeth: Implements the software discovery strategy needed to locate files (e.g., searching for a EFI system partition or standard distro-boot file).
+                - bootflow: Houses the generated parameters dictating exactly how a discovered OS image should execute.
+
+	U-Boot environment:
+        - The U-Boot environment is a dedicated block of non-volatile, persistent storage used by the Das U-Boot bootloader to store runtime configuration parameters as name=value pairs.
+        - Protected by a CRC32 checksum to prevent data corruption, these environment variables dictate critical behaviors—such as where to load the operating system from, how much time to wait before auto-booting, and what argument flags to pass to the Linux kernel.
+        
+        1. ⚙️ How It Works (RAM vs. Storage):
+            - Boot Initialization: When the device powers on, U-Boot copies the persistent environment variables from non-volatile storage (such as eMMC, NAND flash, SPI flash, or SD cards) into a RAM-resident hash table for high-performance lookups.
+            - Runtime Modifications: Commands like setenv or env set only modify the RAM instance of the environment variables.
+            - Persistence: Changes are volatile and will disappear upon a reboot unless explicitly committed to physical storage using the saveenv or env save command.
+
+        2. 🛠️ Common Commands in U-Boot Shell
+            - You can manage environment variables directly from the U-Boot serial console using either legacy shorthand commands or modern env subcommands:
+                | Modern Command         | Legacy Alias  | Description                                                               |
+                | -----------------------| --------------| ------------------------------------------------------------------------- |
+                | `env print`            | `printenv`    | Displays all current environment variables and their values.              |
+                | `env set [name] [value]|`setenv`       | Creates or updates a variable. Omitting the value deletes it.             |
+                | `env save`             | `saveenv`     | Saves the current environment variables to persistent storage.            |
+                | `env default -a -f`    | None          | Resets all variables to the compiled-in default values.                   |
+                | `run [variable]`       | `run`         | Executes the command or script stored in the specified environment variable. |
+        
+        3. 🔑 Critical Environment Variables
+            - U-Boot variables act as a powerful scripting language supporting loops, conditional statements (if/for), and sequential execution (separated by semicolons). Some of the most crucial variables include:
+            - bootcmd: The most critical variable. It contains the default command sequence U-Boot automatically runs when the bootdelay timer expires.
+            - bootargs: The string passed directly to the Linux kernel as its command-line parameters (e.g., specifying the root filesystem location, init system, or console UART baudrate).
+            - bootdelay: The number of seconds U-Boot waits for user input on the serial console before executing bootcmd automatically.
+            - ethaddr: The hardcoded MAC address for the device's network interface. For security and networking stability, this variable is write-once and locked after its first assignment during factory manufacturing.
+            - ipaddr / serverip: Static network configuration variables used to pull kernel images remotely over TFTP.
+
+    SPL/TPL:
+        - SPL (Secondary Program Loader) and TPL (Tertiary Program Loader) are early-stage bootloader components used in embedded systems (such as Das U-Boot) and can also refer to TPLSPL (TPL Services Private Limited), a subsidiary of Tata Projects Limited handling industrial operations and maintenance.
+        
+        1. U-Boot Bootloader Stages (SPL / TPL):
+            - In embedded board boot sequences, the initial internal SRAM or ROM is too small to fit the full U-Boot image. The boot process is split into incremental lightweight stages:
+            - TPL (Tertiary Program Loader):
+                - Role: The very first and smallest code stage used on select hardware (such as certain PowerPC or complex SoC boards) where initial memory is too tight even for SPL.
+                - Function: Performs ultra-early hardware initialization and loads the SPL binary.
+            - SPL (Secondary Program Loader):
+                - Role: The second-stage loader (often called a first-stage loader relative to the OS).
+                - Function: Initializes main external RAM (SDRAM/DDR) and loads the main U-Boot proper image (or alternative payloads like OpenSBI or ARM Trusted Firmware).
+            - VPL (Verifying Program Loader):
+                - Role: An optional verification step between TPL and SPL used for A/B verified boot flows.
+
+	DDR initialization:
+        - DDR initialization is the multi-step boot and configuration sequence where a system controller and physical layer (PHY) power up, calibrate, and train external DRAM (DDR3, DDR4, or DDR5) so reliable high-speed data transfers can occur.
+        - Key Phases of DDR Initialization:
+            1. Power-Up & Reset Sequence:  
+                - Apply board power rails and stabilize clocks and reset signals (e.g., holding RESET_n low per JEDEC specifications, typically ≥ 200 μs).
+                - Release internal resets and initialize the DDR controller and PHY timing modules.
+            2. Controller & PHY Register Configuration:
+                - Program memory controller timing parameters (such as tRCD, tRP, tRAS, CAS latency) and address/data widths.
+                - Configure ZQ impedance calibration using an external 240-ohm precision resistor to tune drive strength and on-die termination (ODT).
+            3. JEDEC Mode Register Programming:
+                - Send standard power-up commands (NOP, Precharge All, Refresh).
+                - Write to internal Mode Registers (MR0 through MR6) to set burst lengths, latencies, and operational modes.
+            4. PHY Training & Calibration:
+                - DLL Lock: Lock the delay-locked loop circuits for clock-data synchronization.
+                - Write Leveling: Align the clock (CK) and strobe (DQS) signals for write operations.
+                - Read Gate / Read Training: Synchronize DQS and DQ signal windows during reads, often using multi-purpose register (MPR) patterns.
+                - \(V_{\text{ref}}\text{DQ}\) Calibration: Center-align internal reference voltages for pseudo-open drain (POD) signaling.
+
+	Clock initialization:
+        - Clock initialization is the hardware and software sequence that sets up a microcontroller, system-on-chip (SoC), or digital logic block's internal clock tree, frequency sources, and phase-locked loops (PLLs).
+        - Core Steps in Clock Initialization:
+            1. Enable Oscillators: Turn on internal or external high-frequency and low-frequency crystal oscillators (such as HFXO/HFRCO or LFXO/LFRCO).
+            2. Wait for Stabilization: Poll status registers (like MCLKSTATUS or oscillator ready flags) to ensure clock signals are stable before switching.
+            3. Configure PLL and Multipliers: Set up Phase-Locked Loops to scale a lower-frequency reference clock up to the target core/system frequency (e.g., 180 MHz).
+            4. Set Prescalers and Dividers: Adjust bus and peripheral dividers (AHB, APB, timers) so that individual peripherals do not exceed their maximum allowed frequency.
+            5. Switch Main Clock Source: Transition the system core clock over to the newly configured high-speed source or PLL.
+            6. Update System Variables: Call core update functions (such as SystemCoreClockUpdate() in CMSIS or equivalent HAL routines) so software-dependent delays and timers (like SysTick) scale accurately.
+
+	Pinmux initialization:
+        - Pinmux (pin multiplexing) initialization configures a System-on-Chip's (SoC) physical I/O pins to route specific internal peripheral signals (such as UART, I2C, SPI, or GPIO) to the external package pins, along with electrical pad characteristics.
+        - Core Components of Pinmux Initialization:
+            1. Function / Mux Mode Selection: Assigns a specific peripheral function (e.g., UART0_TXD, SPI1_CS) to a physical pin using a multiplexer selection register or function ID.
+            2. Pad Control / Electrical Configuration: Configures internal resistors and buffer properties:
+                - Pull-up / Pull-down: Enables or disables internal weak pull-up or pull-down resistors.
+                - Receiver / Input Enable (RX_EN): Turns on the input buffer. Many peripherals (like I2C clocks, SPI chip selects, and MMC/SD lines) require input buffers enabled even when operating as outputs.
+                - Drive Strength (DSE): Adjusts output current drive capability (e.g., 1mA, 4mA).
+            3. Termination / End Marker: In bare-metal or SDK drivers, arrays of pinmux configurations are typically terminated with a sentinel value (e.g., PINMUX_END) so the initialization loop knows where configuration stops.
+
+	PMIC initialization:
+        - PMIC (Power Management Integrated Circuit) initialization is the process of powering up, configuring communication interfaces (such as I2C, SPI, or SPMI), setting regulator/LDO output voltages, and releasing the system or CPU reset line.
+        - Key Stages of PMIC Initialization:
+            1. Hardware Power-Up & Sequencing:
+            2. Interface Setup & Driver Handle:
+            3. Register Configuration:
+            4. Reset Release:
+
+	Storage initialization:
+        - Storage initialization is the process of preparing a storage device, drive, or memory space so that an operating system or program can recognize, manage, and use it.
+        - What Happens During Storage Initialization:
+            1. Operating Systems (Windows/Mac/Linux): Prepares a brand-new or replacement hard drive (HDD) or solid-state drive (SSD) by writing a partition style—such as GPT (GUID Partition Table) or MBR (Master Boot Record)—so the OS can create volumes and file systems (like NTFS).
+            2. Programming & Software: Assigns initial or default values to variables, arrays, or memory allocations (such as zero-initializing static variables or setting up heap/stack memory) before a program executes.
+            3. Cloud & Enterprise Storage: Allocates storage blocks, sets up metadata, or streams base data from sources like Amazon S3 to make cloud databases or RAID arrays operational.
+
+	Ethernet/USB boot:
+        - Ethernet or USB booting—often used for PXE (Preboot Execution Environment) network installation or booting from an external USB/Ethernet adapter—requires specific hardware, BIOS settings, and driver compatibility.
+        - Core Requirements for USB-to-Ethernet PXE Boot:
+            - UEFI/BIOS Support: Your computer's firmware must natively support PXE booting through the specific USB Ethernet adapter or USB-C/Thunderbolt controller. Not all generic adapters work in UEFI mode.
+            - BIOS Settings:
+                - Enable the Network Stack / UEFI PXE Boot / LAN PXE Option ROM.
+                - Enable Thunderbolt Boot support if using a USB-C/Thunderbolt adapter (e.g., on Dell or similar enterprise hardware).
+                - Adjust Fastboot or Legacy Option ROM settings according to your system guidelines (such as setting Fastboot to "Thorough").
+            - MAC Pass-Through / Duplicate MACs: USB adapters have their own MAC addresses, which can conflict on deployment servers like SCCM. Enabling MAC Pass-Through in the BIOS helps pass the host device's actual MAC address.
+            - Server Setup: A configured PXE/TFTP/WDS (Windows Deployment Services) or iPXE server must be active on the local network to serve the boot images.
+
+	Boot arguments:
+        - Boot arguments (or boot flags) are configuration parameters passed directly to an operating system's kernel during startup to control hardware behavior, enable debugging, or troubleshoot issues.
+
+	Device Tree handoff:
+        - A Device Tree handoff refers to the structured process where early-stage boot software passes a compiled hardware description binary (Device Tree Blob or DTB) down the bootloader chain to the operating system kernel. In embedded systems and architectures lacking automatic hardware discovery (like ARM, RISC-V, and specific SoC architectures), this handoff is crucial because it informs the incoming software layer exactly what hardware components exist, where they are mapped in memory, and how they are configured.
+        
+        🔄 The Standard Handoff Chain:
+            - Rather than compiling distinct hardware tables into every single stage of boot firmware, a single cohesive hardware description is passed and mutated down the line:
+                    [ First-Stage Bootloader ] (e.g., TF-A / SPL)
+                            │
+                            ▼  Passes raw memory layout / basic configurations
+                    [ Second-Stage Bootloader ] (e.g., U-Boot / EDK2)
+                            │
+                            ▼  Applies Overlays (.dtbo) & fixes up system variables
+                    [ Operating System Kernel ] (e.g., Linux Engine)
+
+            1. First-Stage Bootloader (FSBL/SPL): Initializes vital low-level components like DDR memory and system clocks. It reads hardware strap pins or EEPROMs to determine the physical board variation.
+            2. Second-Stage Bootloader (e.g., U-Boot): Receives the initial DTB pointer from the FSBL. U-Boot uses its integrated fdt (Flattened Device Tree) engine to modify the tree in RAM dynamically. This is known as a Device Tree Fixup.
+                - Examples: Modifying the available RAM size, injection of MAC addresses, or choosing which dynamic Device Tree Overlays (.dtbo) to apply based on attached expansion boards.
+            3. The Final Kernel Handoff: When calling the kernel boot instruction (e.g., bootm or bootz), U-Boot places the memory pointer of the finalized, combined DTB into a specific CPU register (r2 on ARM32, x0 on ARM64). The Linux kernel parses this address upon initialization to bind its platform drivers to the correct physical devices.
+        
+        🛠️ Evolving Standards in Device Tree Handoffs:
+            - Modern system design guidelines have shifted how handoffs occur to accommodate security and multi-tenant architectures:
+                1. System Device Tree (SDT) & AMD/Xilinx SHEL Flow
+                2. Firmware-Owned Trees (ARM SystemReady / EBBR)
+        
+        ⚠️ Common Handoff Failure Points:
+            - Memory Collisions: If the bootloader loads the DTB into a RAM area that the Linux kernel immediately overwrites during early decompression routines, the handoff pointer corrupts.
+            - Architecture-Register Mismatches: If the register holding the DTB physical address gets wiped or modified right before jumping to the kernel entry point, the kernel will fail to boot because it cannot find the root hardware layout.
+            - Overlay Incompatibilities: Applying a .dtbo overlay compiled against a different base version of the firmware tree can break logical phandle pointers, resulting in failed runtime driver parsing.
+
+	FIT images:
+        - A FIT (Flattened Image Tree) image is a single container format used in embedded Linux to bundle multiple boot components—such as the Linux kernel, Device Tree Blobs (DTBs), Initramfs/Ramdisks, and even FPGA bitstreams—into a single binary file.
+        - It replaces the old legacy uImage format and uses the standard Device Tree syntax to define how these components are packaged and loaded into memory.
+        
+        - Key Advantages of FIT Images:
+            - 📦 Single File Management: Instead of maintaining separate files for kernel, DTB, and rootfs on your flash storage, you handle just one file (typically named fitImage or with a .itb extension).
+            - 🔒 Verified Boot & Security: Individual elements can be hashed (SHA-1/SHA-256) and cryptographically signed (RSA/ECDSA). U-Boot will verify the signature before executing the kernel, creating a secure chain of trust.
+            - 🎛️ Multiple Configurations: A single FIT image can hold multiple DTBs or kernels. U-Boot can dynamically pick the correct configuration matching the hardware variant at runtime.
+
+        - How FIT Images Work:
+            - .its (Image Tree Source): A text file written in Device Tree syntax describing what binaries to include and where they belong in memory.
+            - .itb (Image Tree Blob): The compiled binary output that gets flashed to the device.
+                    [kernel, dtb, rootfs] + [config.its] ===(mkimage tool)===> image.itb ===(flashed to device)===> Loaded by U-Boot
+            
+        - Implementation Example:
+            1. Define the Image Tree Source (image.its)
+            2. Compile the FIT Image
+            3. Booting in U-Boot
+            4. Inspecting FIT Images in U-Boot
+
+	Secure boot basics:
+        - Secure Boot is a security standard that ensures your computer only executes manufacturer-approved, trusted software during the startup process. It acts as a digital bouncer, verifying the authenticity and integrity of every piece of code before handing over control.
+        - How Secure Boot Works:
+            - Root of Trust (RoT): The process begins with an immutable (unchangeable) piece of code hardcoded into the hardware or boot ROM. This forms the foundation of trust.
+            - Chain of Trust: Each stage of the boot sequence (firmware, bootloader, and operating system kernel) cryptographically verifies the digital signature of the next stage before loading it into memory.
+            - Signature Databases: The UEFI firmware uses specialized NV-RAM storage containing databases to validate code:
+                PK (Platform Key): Establishes trust between the hardware owner and the firmware.
+                KEK (Key Enrollment Key): Connects the operating system provider to the firmware signature databases.
+                db (Authorized Database): Holds trusted public keys and certificates.
+                dbx (Revoked Database): Holds blacklisted or compromised certificates, taking strict precedence over the authorized database.
+            - Failure Action: If any signature is invalid, missing, or listed in the revoked database (dbx), Secure Boot halts the boot process or forces the system into recovery mode.
+
 	
 
 5. Device Tree
 ---------------------------------------------------------------
-	DTS / DTSI structure
-	Nodes and properties
+	DTS / DTSI structure:
+        - A DTS (Device Tree Source) and DTSI (Device Tree Source Include) structure organizes hardware descriptions in a hierarchical tree format so the Linux kernel or firmware can recognize non-discoverable board components without hardcoding them.
+        - Core File Types:
+            1. DTSI (.dtsi - Device Tree Source Include): Acts like a C-language header file (.h). It holds reusable, generic hardware definitions for components like the SoC (System-on-Chip), CPU cores, or System-on-Module (SoM). Peripherals inside an SoC DTSI are typically marked status = "disabled" by default because not every board uses every feature.
+            2. DTS (.dts - Device Tree Source): The main, human-readable entry file representing a specific physical board or model (one .dts file per board). It includes the relevant .dtsi files and applies board-specific overrides, pinmux settings, and enables active hardware.
+            3. DTB (.dtb - Device Tree Blob): The compiled binary version of the DTS/DTSI files, generated via the DTC (Device Tree Compiler), which is loaded by the bootloader or kernel.
+        - Typical 3-Tier Hierarchy:
+            1. SoC Level (soc.dtsi): Defines internal memory-mapped peripherals, UARTs, I2C controllers, timers, and CPU bus architecture built into the chip.
+            2. SoM / Module Level (som.dtsi - optional, common in modular designs like Toradex): Includes the SoC .dtsi and adds components fixed to the module itself (such as on-module RAM size, power management ICs, or wireless chips).
+            3. Board / Carrier Level (board.dts): 
+
+	Nodes and properties:
+        1. Device Tree Nodes:
+            - Nodes represent actual hardware devices, sub-systems, or buses.
+            - The Root Node: Every device tree starts with a single root node, represented by a forward slash (/).
+            - Hierarchy: Nodes can contain other sub-nodes (child nodes) to mirror the physical layout of the chip or board. For example, a I2C controller node will host child nodes representing individual I2C sensors.
+            - Naming Convention: Nodes use the syntax node-name@unit-address. The unit-address typically points to the primary memory address or bus address of the device.
+                    / {  /* Root Node */
+                        soc {  /* Child node representing System on Chip */
+                            serial@101f1000 {  /* Sub-child node with unit-address */
+                                /* Properties go here */
+                            };
+                        };
+                    };
+
+        2. Device Tree Properties:
+            - Properties are key-value pairs stored inside nodes that describe specific attributes of that hardware.
+
+        3. Common Standard Properties:
+            - The Linux kernel depends on several standard properties to bind drivers and configure system resources:
+                +-------------+-------------------+--------------------------------------------------------------------------------------------------+
+                | Property    | Value Type        | Description                                                                                      |
+                +-------------+-------------------+--------------------------------------------------------------------------------------------------+
+                | compatible  | String List       | Identifies the device so the Linux kernel can bind the appropriate driver.                       |
+                | reg         | Cells (< >)       | Defines the register address range or bus address and the size allocated to the device.          |
+                | status      | String            | Specifies whether the device is enabled or disabled. Common values are "okay" and "disabled".    |
+                | interrupts  | Cells (< >)       | Specifies the interrupt lines used by the hardware device.                                       |
+                | clocks      | Cells (< >)       | References the clock sources required by the peripheral.                                         |
+                | phandle     | Cell (32-bit int) | A unique numerical identifier used to reference a device tree node from other nodes.             |
+                +-------------+-------------------+--------------------------------------------------------------------------------------------------+
+
+        4. Special System Nodes:
+            - Outside of hardware peripherals, there are standard architectural nodes used to configure the kernel environment:
+            - cpus: Lists the available CPU cores and their configurations.
+            - memory: Tells the kernel the physical address range and size of the system's RAM.
+            - chosen: Used by the bootloader (like U-Boot) to pass dynamic information to the kernel, such as the command-line arguments (bootargs).
+            
 	compatible
 	reg
 	interrupts
