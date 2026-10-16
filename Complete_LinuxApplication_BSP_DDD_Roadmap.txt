@@ -899,30 +899,307 @@ BSP & DDD Roadmap:
             - memory: Tells the kernel the physical address range and size of the system's RAM.
             - chosen: Used by the bootloader (like U-Boot) to pass dynamic information to the kernel, such as the command-line arguments (bootargs).
             
-	compatible
-	reg
-	interrupts
-	clocks
-	resets
-	gpios
-	pinctrl
-	dma
-	Device Tree overlays
-	Device Tree debugging
-	Mapping Device Tree nodes to drivers
-	
+	compatible:
+        - The compatible property tells Linux what type of hardware a Device Tree node describes.
+        - Linux uses it to match a Device Tree node with a driver that supports that hardware.
+
+	reg:
+        - The reg property describes the address and size of a device's register region or other addressable resources.
+        - The interpretation depends on the parent bus's #address-cells and #size-cells properties.
+
+	interrupts:
+        - The interrupts property specifies which interrupt a device uses.
+        - The meaning of the cells in interrupts depends on the interrupt controller's binding.
+
+	clocks:
+        - Hardware peripherals often require clocks to operate.
+        - The clocks property connects a device to one or more clock providers.
+
+	resets:
+        - Many peripherals must be taken out of reset before they can operate.
+        - The resets property specifies the reset controller and reset line associated with a device.
+
+	gpios:
+        - GPIOs are used for simple digital input and output signals.
+        - The GPIO controller label and GPIO identifier are illustrative.
+
+	pinctrl:
+        - Modern SoCs often share physical pins between several functions.
+        - The pin controller configures which function is connected to a pin and may also configure pull-up, pull-down, drive strength, and other electrical properties.
+
+	dma:
+        - DMA allows hardware peripherals to transfer data to or from memory with reduced CPU involvement.
+
+	Device Tree overlays:
+        - A Device Tree overlay applies changes to a base Device Tree.
+        - It can enable a peripheral, add a device on an available bus, or modify an existing node without maintaining a completely separate copy of the base DTS.
+        - Overlay support depends on the bootloader, kernel configuration, and platform integration.
+
+	Device Tree debugging:
+        - Device Tree debugging helps determine whether the intended hardware configuration actually reached the running kernel and whether the kernel successfully created the corresponding device.
+
+	Mapping Device Tree nodes to drivers:
+        - This is one of the most important concepts when developing or debugging an embedded Linux BSP.
+        - A Device Tree node does not directly call a driver function. Instead, the kernel creates devices and matches them against registered drivers.
+
+                                Board DTS
+                                    |
+                                    v
+                                DTS compiler
+                                    |
+                                    v
+                                    DTB
+                                    |
+                                    v
+                            Bootloader loads DTB
+                                    |
+                                    v
+                            Linux kernel starts
+                                    |
+                                    v
+                        Device Tree is populated
+                                    |
+                                    v
+                            Device object created
+                                    |
+                                    v
+                        Registered platform driver
+                                    |
+                                    v
+                        compatible strings matched
+                                    |
+                            +-----+-----+
+                            |           |
+                            Match       No match
+                            |           |
+                            v           v
+                        Probe function   Device remains
+                        is invoked       unbound
+                            |
+                            v
+                    Driver gets resources
+                            |
+                            v
+                    Hardware initialized
+                            |
+                            v
+                        Device operates
+
 
 6. Linux Device Drivers
 ---------------------------------------------------------------
 	Learn these in roughly this order:
-	Kernel module development
-	Character drivers
-	File operations
-	open/read/write/ioctl
-	copy_to_user() / copy_from_user()
-	Platform drivers
-	Device Tree matching
-	Probe/remove
+	Kernel module development:
+        - Linux Loadable Kernel Modules (LKMs) are pieces of object code that dynamically expand the kernel's capabilities at runtime without requiring a full system reboot. They run directly in Ring 0 (kernel space), giving them full hardware privileges. Because they lack the memory sandboxing found in user space, a single unhandled pointer or structural error can trigger a kernel panic rather than a simple segmentation fault.
+        - Development steps:
+            1. Set Up the Development Environment
+            2. Write the C Source Code
+            3. Define the Kbuild Makefile
+            4. Build the Module
+            5. Load, Verify, and Unload
+
+	Character drivers:
+        - A character device driver is a Linux or Unix kernel module that manages hardware by transmitting data as a sequential stream of bytes (one character at a time) rather than in large blocks.
+        
+        - Key Characteristics:
+            1. Sequential Access: Data is read or written in a continuous stream without random-access seeking (unlike block devices like hard drives).
+            2. Examples: Keyboards, mice, serial ports, sound cards, and custom hardware nodes.
+            3. Filesystem Nodes: They appear as special files in the /dev directory (starting with c in ls -l outputs).
+        
+        - Core Components in Linux:
+            1. Major number: Identifies which driver handles the device.
+            2. Minor number: Distinguishes a specific physical device or instance managed by that driver.
+            3. struct file_operations: A table of function pointers connecting system calls from user-space down to the driver code. Common operations include:
+                - open() – Initializes or allocates resources when the device file is opened.
+                - read() – Copies data from kernel space to user space (copy_to_user).
+                - write() – Copies data from user space to kernel space (copy_from_user).
+                - release() / close() – Cleans up when the file is closed.
+                - ioctl() – Handles device-specific configuration and control commands.
+            4. struct cdev: The internal kernel structure representing the character device itself, registered via functions like cdev_init() and cdev_add().
+
+        - Basic Development Workflow:
+            1. Write the kernel module code defining your file_operations and buffer management.
+            2. Register a device number region using alloc_chrdev_region() or register_chrdev_region().
+            3. Initialize and add the cdev structure to the kernel.
+            4. Build the module using a Makefile and load it into the running kernel via insmod.
+            5. Create a device node in /dev and test read/write operations from user space.
+
+	File operations:
+        - File operations are the basic actions an operating system performs to manage and manipulate data stored in files and directories.
+        - Core Operating System File Operations:
+            1. Create: Make a new file or directory on a storage device using system calls like open() / CreateFile() for files or mkdir() / CreateDirectory() for folders.
+            2. Open: Load or initialize a file reference into memory so that read or write actions can take place.
+            3. Read: Retrieve and access data from a file without changing its contents.
+            4. Write: Store, update, or append new data into an existing file.
+            5. Seek / Reposition: Move the internal read/write pointer to a specific location or byte offset within a file.
+            6. Close: Release the file handle and memory resources after finishing operations to prevent data corruption.
+            7. Rename / Move: Change the name or path of a file or directory using commands or APIs like rename() or MoveFile().
+            8. Delete / Unlink: Permanently remove a file or directory from secondary storage to free up space.
+            9. Truncate: Erase all contents inside a file while keeping its name, attributes, and file handle intact.
+
+	open/read/write/ioctl:
+        - open, read, write, and ioctl are fundamental Unix/Linux system calls used to interact with the file system and hardware devices. Under the Unix philosophy where "everything is a file," hardware devices are represented as special files (usually inside /dev/). These system calls serve as the standard user-space interface that bridges programs to kernel-level device drivers.
+CORE COMPARISON: USER SPACE VS. KERNEL SPACE
+        +--------------+--------------------------------+--------------------------------+--------------------------------+
+        | System Call  | User-Space Signature & Purpose | Kernel-Space Driver Operation  | Typical Use Case               |
+        +--------------+--------------------------------+--------------------------------+--------------------------------+
+        | open         | int open(const char *pathname, | int (*open)(struct inode *,    | Accessing a regular file,      |
+        |              | int flags);                    | struct file *);                | pipe, or hardware device.      |
+        |              | Allocates and returns a file   | Initializes hardware,          |                                |
+        |              | descriptor (FD).               | increments usage counts, or    |                                |
+        |              |                                | clears buffers.                |                                |
+        +--------------+--------------------------------+--------------------------------+--------------------------------+
+        | read         | ssize_t read(int fd, void *buf,| ssize_t (*read)(struct file *, | Reading text from a file or    |
+        |              | size_t count);                 | char __user *, size_t,         | acquiring streaming data from |
+        |              | Retrieves data from the file   | loff_t *);                     | a sensor.                      |
+        |              | descriptor into buf.           | Uses copy_to_user() to transfer|                                |
+        |              |                                | device data to user memory.    |                                |
+        +--------------+--------------------------------+--------------------------------+--------------------------------+
+        | write        | ssize_t write(int fd,          | ssize_t (*write)(struct file *,| Saving data to disk or sending |
+        |              | const void *buf, size_t count);| const char __user *, size_t,   | commands to a terminal display|
+        |              | Sends data from buf to the     | loff_t *);                     | or motor driver.               |
+        |              | file descriptor.               | Uses copy_from_user() to       |                                |
+        |              |                                | transfer data into kernel      |                                |
+        |              |                                | buffers.                       |                                |
+        +--------------+--------------------------------+--------------------------------+--------------------------------+
+        | ioctl        | int ioctl(int fd,              | long (*unlocked_ioctl)         | Configuring hardware, ejecting |
+        |              | unsigned long request, ...);   | (struct file *, unsigned int   | a CD-ROM, changing a baud rate,|
+        |              | Executes input/output control  | cmd, unsigned long arg);       | or resetting hardware.         |
+        |              | commands using request codes.  | Processes commands, often      |                                |
+        |              |                                | using a switch(cmd) statement. |                                |
+        +--------------+--------------------------------+--------------------------------+--------------------------------+
+
+	copy_to_user() / copy_from_user():
+        - In the Linux kernel, copy_to_user() and copy_from_user() are the standard functions used to safely transfer arbitrary blocks of data across the boundary between kernel space and user space. They are defined in the header <linux/uaccess.h>.
+            unsigned long copy_to_user(void __user *to, const void *from, unsigned long n);
+            unsigned long copy_from_user(void *to, const void __user *from, unsigned long n);
+            +-------------------------+----------------------------------+----------------------------------+
+            | Attribute               | copy_to_user()                   | copy_from_user()                 |
+            +-------------------------+----------------------------------+----------------------------------+
+            | Direction               | Kernel space -> User space       | User space -> Kernel space       |
+            +-------------------------+----------------------------------+----------------------------------+
+            | Typical Context         | Driver read() operations         | Driver write() or ioctl()        |
+            |                         |                                  | operations                        |
+            +-------------------------+----------------------------------+----------------------------------+
+            | Destination (to)        | void __user * (User pointer)     | void * (Kernel buffer)           |
+            +-------------------------+----------------------------------+----------------------------------+
+            | Source (from)           | const void * (Kernel buffer)     | const void __user *              |
+            |                         |                                  | (User pointer)                   |
+            +-------------------------+----------------------------------+----------------------------------+
+
+	Platform drivers:
+        - Platform drivers are a special class of device drivers in the Linux kernel used to manage non-discoverable hardware components—such as system-on-chip (SoC) peripherals, UARTs, I2C controllers, and GPIOs—that connect directly to the CPU bus rather than through self-enumerating buses like PCI or USB.
+
+        - Key Concepts:
+            - Platform Bus: A virtual bus used by the Linux kernel to connect platform drivers with platform devices.
+            - Platform Device (struct platform_device): Represents the physical hardware component, holding a name, ID number, memory addresses, and interrupt request (IRQ) resources.
+            - Platform Driver (struct platform_driver): The software code that controls the device, registered with the kernel to handle hardware operations.
+
+        - Core Functions & Structure:
+            - probe(): Called when a matching platform device is found; it verifies that the hardware exists, requests resources (like memory or clocks), and initializes the device.
+            - remove(): Cleans up and releases resources when the driver or device is unloaded.
+            - Power Management: Supports optional callback functions for suspend, resume, and shutdown states.
+
+        - How They Work:
+            - Hardware Description: The hardware is described via board files, ACPI, or a Device Tree (DTB) instead of being auto-detected.
+            - Registration: The driver registers itself with the platform bus using platform_driver_register().
+            - Binding: The kernel matches the device's name or compatible string to the registered driver and executes the driver's probe() function.
+
+                                Custom A311D Hardware
+                                        |
+                                        v
+                                    Device Tree
+                                    (board.dts)
+                                        |
+                                        v
+                                    Compile Device Tree
+                                        (DTB)
+                                        |
+                                        v
+                                    U-Boot
+                                        |
+                                        v
+                                    Linux Kernel
+                                        |
+                                        v
+                                Create Platform Device
+                                        |
+                                        v
+                                Match compatible property
+                                        |
+                                        v
+                                Platform Driver
+                                    (probe function)
+                                        |
+                                +---------+----------+
+                                |                    |
+                                v                    v
+                        Obtain HW resources    Initialize hardware
+                                |                    |
+                                +---------+----------+
+                                        |
+                                        v
+                                Optional Character Device
+                                        |
+                                        v
+                                    /dev/mydevice
+                                        |
+                                        v
+                                Userspace Application
+
+	Device Tree matching:
+        - Device Tree (DT) matching is the mechanism used by the Linux kernel to bind an operating system device driver to a specific piece of non-discoverable hardware (like a peripheral on an I2C, SPI, or memory-mapped platform bus).
+        - Instead of hardcoding hardware initialization details directly into the kernel source, the hardware configuration is externalized into a Device Tree Source (.dts) file. The kernel matches this description against its compiled driver table at runtime.
+        - 🔑 The Core Driver-to-Hardware Matchmaker: compatible
+            - The DTS Node Entry: Every hardware peripheral defined in a device tree has a compatible property. The format follows a standard convention: "vendor,device-model". Multiple strings can be listed in order of preference (from most specific to most generic).
+            - The Kernel Driver Definition: In the kernel driver code, the driver provides an array of IDs using the of_device_id structure.
+
+        1. In the Device Tree (.dts file):
+                i2c-sensor@48 {
+                    compatible = "acme,supersensor-v2", "acme,supersensor";
+                    reg = <0x48>;
+                    status = "okay";
+                };
+
+        2. In the Kernel Driver Code (.c file):
+                static const struct of_device_id my_sensor_of_match[] = {
+                    { .compatible = "acme,supersensor-v2" },
+                    { .compatible = "acme,supersensor" },
+                    { } // Sentinel marking the end of the array
+                };
+                MODULE_DEVICE_TABLE(of, my_sensor_of_match); // Enables driver autoloading
+
+                static struct platform_driver my_sensor_driver = {
+                    .driver = {
+                        .name = "acme-supersensor-driver",
+                        .of_match_table = my_sensor_of_match, // Enforces the DT matching
+                    },
+                    .probe = my_sensor_probe,
+                    .remove = my_sensor_remove,
+                };
+
+        - When the kernel boots and parses the tree, it encounters the node, loops through its compatible strings, and looks for an exact string match inside the of_match_table of registered drivers. If a match succeeds, the driver's .probe() function is executed to initialize the device.
+
+	Probe/remove:
+        - In Linux device driver development, probe() initializes a device when Linux binds a driver to it, while remove() cleans up when the device is detached from that driver.
+        - probe() — device initialization:
+            - The Linux driver core calls probe() when a device matches a registered driver and the required binding conditions are met.
+            - Typical operations include:
+                    Allocate memory for driver-specific data.
+                    Obtain hardware resources from Device Tree.
+                    Map memory-mapped registers.
+                    Configure GPIOs, clocks, and interrupts.
+                    Initialize the hardware.
+                    Register a userspace interface if required.
+        - remove() — device cleanup:
+            - The driver core calls remove() when the device is detached from the driver.
+            - Typical operations include:
+                    Stop hardware activity.
+                    Disable interrupts and cancel pending work.
+                    Unregister userspace interfaces.
+                    Release resources that are not automatically managed.
+                    Leave the hardware in a safe state.
+                    
 	GPIO drivers
 	Interrupt drivers
 	I2C drivers
